@@ -2,6 +2,66 @@ import numpy as np
 from sklearn import metrics
 import matplotlib.pyplot as plt
 
+def pav(target, score):
+    """
+    PAV uses the pair adjacent violators method to produce a monotonic
+    smoothing of classifier scores. This calibrates the scores to be posterior
+    probabilities and produces acores that form a ROC convex hull.
+    
+    Translated from matlab by Sean Collins (2006) as part of the EMAP toolbox
+    Modified to sort based on score and target arrays (as per scikit) by APBradley (2017).
+    
+    For details see: 
+    PAV and the ROC convex hull, Tom Fawcett and Alexandru Niculescu-Mizil, 
+    Mach Learn (2007) 68: 97–106.
+    
+    Parameters
+    ----------
+    target : array, shape = [n_samples]
+        True binary labels in range {0, 1} or {-1, 1}.
+
+    score : array, shape = [n_samples]
+        Target scores, can either be posterior probability estimates of the
+        positive class, confidence values, or non-thresholded measure of
+        decisions (as returned by a “decision_function” on some classifiers).
+    
+    Returns:
+    t: target labels sorted according to the input scores
+    v: sorted scores as calibrated probabilities (0,1)
+    
+    """
+    s_ind = np.argsort(score)
+    t = target[s_ind]
+    y = target[s_ind]
+    
+    y = np.asarray(y)
+    assert y.ndim == 1
+    n_samples = len(y)
+    v = y.copy()
+    lvls = np.arange(n_samples)
+    lvlsets = np.c_[lvls, lvls]
+    flag = 1
+    while flag:
+        deriv = np.diff(v)
+        if np.all(deriv >= 0):
+            break
+
+        viol = np.where(deriv < 0)[0]
+        start = lvlsets[viol[0], 0]
+        last = lvlsets[viol[0] + 1, 1]
+        s = 0
+        n = last - start + 1
+        for i in range(start, last + 1):
+            s += v[i]
+
+        val = s / n
+        for i in range(start, last + 1):
+            v[i] = val
+            lvlsets[i, 0] = start
+            lvlsets[i, 1] = last
+    
+    return (t, v)
+
 def plot_bland_altman(data1, data2, *args, **kwargs):
     """
     Function to draw a Bland Altman plot comparing two clinical measurements
@@ -213,6 +273,7 @@ def chi_sqr_val(tpr, fpr, Nn, Np):
     efp = (rp*Nn)/(Nn+Np)+0.000001
     # return the chi squared value
     chi = ((((tn-etn)**2)/etn)+(((tp-etp)**2)/etp)+(((fn-efn)**2)/efn) +(((fp-efp)**2)/efp))
+    
     return chi
 
 def max_npv(fpr, tpr, Nn, Np):
