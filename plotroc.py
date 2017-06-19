@@ -2,11 +2,84 @@ import numpy as np
 from sklearn import metrics
 import matplotlib.pyplot as plt
 
+def reliability_curve(y_true, y_score, bins=10, normalize=True):
+    """Compute reliability curve
+
+    Reliability curves allow checking if the predicted probabilities of a
+    binary classifier are well calibrated. This function returns two arrays
+    which encode a mapping from predicted probability to empirical probability.
+    For this, the predicted probabilities are partitioned into equally sized
+    bins and the mean predicted probability and the mean empirical probabilties
+    in the bins are computed. For perfectly calibrated predictions, both
+    quantities should be approximately equal (for sufficiently many test
+    samples).
+
+    Note: this implementation is restricted to binary classification.
+    Modified to return by APBradley (2017).
+
+    Parameters
+    ----------
+
+    y_true : array, shape = [n_samples]
+        True binary labels (0 or 1).
+
+    y_score : array, shape = [n_samples]
+        Target scores, can either be probability estimates of the positive
+        class or confidence values. If normalize is False, y_score must be in
+        the interval [0, 1]
+
+    bins : int, optional, default=10
+        The number of bins into which the y_scores are partitioned.
+        Note: n_samples should be considerably larger than bins such that
+              there is sufficient data in each bin to get a reliable estimate
+              of the reliability
+
+    normalize : bool, optional, default=True
+        Whether y_score needs to be normalized into the bin [0, 1]. If True,
+        the smallest value in y_score is linearly mapped onto 0 and the 
+        largest one onto 1.
+
+    Returns
+    -------
+    y_score_bin_mean : array, shape = [bins]
+        The mean predicted y_score in the respective bins.
+
+    empirical_prob_pos : array, shape = [bins]
+        The empirical probability (frequency) of the positive class (+1) in the
+        respective bins.
+
+    References
+    ----------
+    .. [1] `Predicting Good Probabilities with Supervised Learning
+            <http://machinelearning.wustl.edu/mlpapers/paper_files/icml2005_Niculescu-MizilC05.pdf>`_
+
+    """
+    # Normalize scores into bin [0, 1]
+    if normalize:  
+        y_score = (y_score - y_score.min()) / (y_score.max() - y_score.min())
+
+    bin_width = 1.0 / bins
+    bin_centers = np.linspace(0, 1.0 - bin_width, bins) + bin_width / 2
+
+    y_score_bin_mean = np.zeros(bins)
+    empirical_prob_pos = np.zeros(bins)
+    for i, threshold in enumerate(bin_centers):
+        # determine all samples where y_score falls into the i-th bin
+        bin_idx = np.logical_and(threshold - bin_width / 2 < y_score,
+                                 y_score <= threshold + bin_width / 2)
+        # Store mean y_score and mean empirical probability of positive class
+        if np.count_nonzero(bin_idx):
+            y_score_bin_mean[i] = y_score[bin_idx].mean()
+            empirical_prob_pos[i] = y_true[bin_idx].mean()
+    
+    return y_score_bin_mean, empirical_prob_pos
+
 def pav(target, score):
     """
-    PAV uses the pair adjacent violators method to produce a monotonic
-    smoothing of classifier scores. This calibrates the scores to be posterior
-    probabilities and produces acores that form a ROC convex hull.
+    PAV uses the pair adjacent violators algorithm to produce a monotonic
+    (piecewise constant) smoothing of classifier scores. 
+    This calibrates the scores to be calibrated posterior probabilities 
+    and produces scores that form a ROC convex hull.
     
     Translated from matlab by Sean Collins (2006) as part of the EMAP toolbox
     Modified to sort based on score and target arrays (as per scikit) by APBradley (2017).
