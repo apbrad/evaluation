@@ -1,6 +1,8 @@
 import numpy as np
 from sklearn import metrics
 import matplotlib.pyplot as plt
+from math import log
+from scipy.optimize import fmin_bfgs
 
 def reliability_curve(y_true, y_score, bins=10, normalize=True):
     """Compute reliability curve
@@ -15,7 +17,7 @@ def reliability_curve(y_true, y_score, bins=10, normalize=True):
     samples).
 
     Note: this implementation is restricted to binary classification.
-    Modified to return by APBradley (2017).
+    Modified to handle zero bin counts correctly by APBradley (2017).
 
     Parameters
     ----------
@@ -68,18 +70,96 @@ def reliability_curve(y_true, y_score, bins=10, normalize=True):
         bin_idx = np.logical_and(threshold - bin_width / 2 < y_score,
                                  y_score <= threshold + bin_width / 2)
         # Store mean y_score and mean empirical probability of positive class
+        # If calibrated the mean bin score and percent +ve cases are approximately equal
         if np.count_nonzero(bin_idx):
             y_score_bin_mean[i] = y_score[bin_idx].mean()
             empirical_prob_pos[i] = y_true[bin_idx].mean()
     
     return y_score_bin_mean, empirical_prob_pos
 
-def pav(target, score):
+def sigmoid_calibrate(x, A, B):
+    """
+    Compute sigmoid values for each sets of scores in x
+    using the parameters A, B found from sigmoid_fit    
+    """
+    return 1 / (1 + np.exp(A*x + B))
+    
+def sigmoid_fit(y, df, sample_weight=None):
+    """
+    Probability Calibration with sigmoid method (Platt 2000)
+    Fits sigmoid function of form:
+        p = 1/(1 + exp(A.df + B))
+    To map arbitrary classifier scores to calibrated probabilites
+    
+    Parameters
+    ----------
+    y : ndarray, shape (n_samples,)
+        The targets. True labels (0 or 1)
+        
+    df : ndarray, shape (n_samples,)
+        The decision function or posterior probability for the samples
+        
+    sample_weight : array-like, shape = [n_samples] or None
+        Sample weights. If None, then samples are equally weighted.
+    
+    Returns
+    -------
+    A : float
+        The slope.
+        
+    B : float
+        The intercept.
+        
+    References
+    ----------
+    Platt, 1999 "Probabilistic Outputs for Support Vector Machines"
+    """
+    #df = column_or_1d(df)
+    #y = column_or_1d(y)
+
+    F = df  # F follows Platt's notations
+    tiny = np.finfo(np.float).tiny  # to avoid division by 0 warning
+
+    # Bayesian priors (see Platt end of section 2.2)
+    prior0 = float(np.sum(y <= 0))
+    prior1 = y.shape[0] - prior0
+    T = np.zeros(y.shape)
+    T[y > 0] = (prior1 + 1.) / (prior1 + 2.)
+    T[y <= 0] = 1. / (prior0 + 2.)
+    T1 = 1. - T
+
+    def objective(AB):
+        # From Platt (beginning of Section 2.2)
+        E = np.exp(AB[0] * F + AB[1])
+        P = 1. / (1. + E)
+        l = -(T * np.log(P + tiny) + T1 * np.log(1. - P + tiny))
+        if sample_weight is not None:
+            return (sample_weight * l).sum()
+        else:
+            return l.sum()
+
+    def grad(AB):
+        # gradient of the objective function
+        E = np.exp(AB[0] * F + AB[1])
+        P = 1. / (1. + E)
+        TEP_minus_T1P = P * (T * E - T1)
+        if sample_weight is not None:
+            TEP_minus_T1P *= sample_weight
+        dA = np.dot(TEP_minus_T1P, F)
+        dB = np.sum(TEP_minus_T1P)
+        return np.array([dA, dB])
+
+    AB0 = np.array([0., log((prior0 + 1.) / (prior1 + 1.))])
+    AB_ = fmin_bfgs(objective, AB0, fprime=grad, disp=False)
+    
+    return AB_[0], AB_[1]
+
+def pav_rocch(target, score):
     """
     PAV uses the pair adjacent violators algorithm to produce a monotonic
     (piecewise constant) smoothing of classifier scores. 
     This calibrates the scores to be calibrated posterior probabilities 
-    and produces scores that form a ROC convex hull.
+    and produces scores that form a ROC convex hull (ROCCH).
     
     Translated from matlab by Sean Collins (2006) as part of the EMAP toolbox
     Modified to sort based on score and target arrays (as per scikit) by APBradley (2017).
@@ -271,6 +351,35 @@ def partial_auc(fpr, tpr, op1=0.0, op2=1.0, Sp=True):
 
     return p_auc
 
+def decision_threshold(fpr, tpr, thresh, dec_t):
+    """
+    Function that finds the fpr, tpr that meets a decision threshold
+    
+    Parameters
+    ----------
+    fpr : array, shape = [>2]
+        Increasing false positive rates
+
+    tpr : array, shape = [>2]
+        Increasing true positive rates
+
+    thresh : array, shape = [n_thresholds]
+        Decreasing thresholds on the decision function
+    
+    dec_t : float 
+        The decision threshold (score or posterior probability) to find
+        
+    Returns
+    -------
+    t_fpr, T_tpr, t_thresh : float
+        The operating point (fpr, tpr) that meets the decision threshold    
+    """
+    for i, t_val in enumerate(thresh):
+        # thresh decreasing order, find first one that meets dec_t
+        if t_val <= dec_t:
+            return (fpr[i], tpr[i], t_val)
+
+        
 def neyman_pearson(fpr, tpr, thresh, min_rate=0.95, Se=True):
     """
     Function that finds the operating point (threshold posterior) on a ROC curve
@@ -523,7 +632,7 @@ def sew_auc(AUC, nn, np):
     return std_err
 
 def plot_roc(target, score, plot_type='SeSp', title=None, save_pdf=False, min_err=False,
-             ppv_npv=False, n_p='', np_min=0.9, max_J=False,
+             dec_T=0.0, ppv_npv=False, n_p='', np_min=0.9, max_J=False,
              pos_label=None, sample_weight=None, drop_intermediate=True):
     """
 
@@ -568,6 +677,10 @@ def plot_roc(target, score, plot_type='SeSp', title=None, save_pdf=False, min_er
 
      min_err : boolean, optional (default=False)
          Whether to highlight the minimum error operating point
+         
+     dec_T : float, optional (default=0.0 = False)
+         Whether to highlight the operating point at decision threshold score value  
+         If the score is a calibrated probability 0.5 is a natural threshold value 
 
      ppv_npv : boolean, optional (default=False
          Whether to highlight the best NPV and PPV operating points
@@ -629,6 +742,9 @@ def plot_roc(target, score, plot_type='SeSp', title=None, save_pdf=False, min_er
     if min_err:
         merr, mfpr, mtpr, mthresh = bayes_error(fpr,tpr,thresh,Nn,Np)
 
+    if dec_T:
+        Tfpr, Ttpr, Tthresh = decision_threshold(fpr,tpr,thresh,dec_T)
+    
     if ppv_npv:
         Bppv, Bppv_fpr, Bppv_tpr = max_ppv(fpr, tpr, Nn, Np)
         Bnpv, Bnpv_fpr, Bnpv_tpr = max_npv(fpr, tpr, Nn, Np)
@@ -661,6 +777,9 @@ def plot_roc(target, score, plot_type='SeSp', title=None, save_pdf=False, min_er
 
         if min_err:
             plt.plot(1-mfpr, mtpr, 'bo', label='Error = {:0.3f}'.format(merr))
+            
+        if dec_T:
+            plt.plot(1-Tfpr, Ttpr, 'co', label='Sp,Se@{:0.2f} = ({:0.2f},{:0.2f})'.format(Tthresh,1-Tfpr,Ttpr))
 
         if th_np:
             plt.plot(1-fpr_np, tpr_np, 'ko', label='Sp,Se = ({:0.3f},{:0.3f})'.format(1-fpr_np,tpr_np))
@@ -722,6 +841,9 @@ def plot_roc(target, score, plot_type='SeSp', title=None, save_pdf=False, min_er
 
         if min_err:
             plt.plot(mfpr, mtpr, 'bo', label='Error = {:0.3f}'.format(merr))
+
+        if dec_T:
+            plt.plot(Tfpr, Ttpr, 'co', label='FPR,TPR@{:0.2f} = ({:0.2f},{:0.2f})'.format(Tthresh,Tfpr,Ttpr))
 
         if th_np:
             plt.plot(fpr_np, tpr_np, 'ko', label='FPR,TPR = ({:0.3f},{:0.3f})'.format(fpr_np,tpr_np))
