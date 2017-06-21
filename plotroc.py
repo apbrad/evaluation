@@ -379,7 +379,6 @@ def decision_threshold(fpr, tpr, thresh, dec_t):
         if t_val <= dec_t:
             return (fpr[i], tpr[i], t_val)
 
-        
 def neyman_pearson(fpr, tpr, thresh, min_rate=0.95, Se=True):
     """
     Function that finds the operating point (threshold posterior) on a ROC curve
@@ -458,7 +457,7 @@ def chi_sqr_val(tpr, fpr, Nn, Np):
     
     return chi
 
-def max_npv(fpr, tpr, Nn, Np):
+def best_npv(fpr, tpr, thresh, Nn, Np, target_npv=1.0):
     """
     Finds the best Negative Predictive Value (NPV) and associated operating point
     NPV = TN/(TN+FN) - note depends of prevelance of negative class
@@ -472,29 +471,36 @@ def max_npv(fpr, tpr, Nn, Np):
     Nn, Np : int
         The number of negative and positive samples in the dataset the ROC curve
         was constructed from
+    target_npv : float (default=1.0)
+        The target npv to find the closest operating point for, e.g., 
+        if npv=1.0 then the "best" npv closest to 1.0 is returned
 
     Returns
     -------
-    Bnpv, Bnpv_fpr, Bnpv_tpr: float
-        The maximum NPV and the operating point (fpr, tpr) with max NPV
+    Bnpv, Bnpv_fpr, Bnpv_tpr, Bnpv_thresh : float
+        Best NPV and operating point (fpr, tpr) closest to target NPV
     """
     tnr = 1-fpr
     fnr = 1-tpr
     npv = np.zeros(len(tnr))
     Bnpv = 0.0
+    npv_diff = 1.0
     for i, tnr_val in enumerate(tnr):
         if tnr_val == 0.0:
             npv[i] = 0.0
         else:
-            npv[i] = (tnr_val*Nn)/((tnr_val*Nn) + (fnr[i]*Np))
-            if npv[i] > Bnpv:
+            npv[i] = (tnr_val*Nn)/((tnr_val*Nn) + (fnr[i]*Np)) 
+            diff = abs(target_npv - npv[i])
+            if diff < npv_diff:
+                npv_diff = diff
                 Bnpv = npv[i]
                 Bnpv_tpr = tpr[i]
                 Bnpv_fpr = fpr[i]
+                Bnpv_thresh = thresh[i]
 
-    return (Bnpv, Bnpv_fpr, Bnpv_tpr)
+    return (Bnpv, Bnpv_fpr, Bnpv_tpr, Bnpv_thresh)
 
-def max_ppv(fpr, tpr, Nn, Np):
+def best_ppv(fpr, tpr, thresh, Nn, Np, target_ppv=1.0):
     """
     Finds the best Positive Predictive Value (PPV) and associated operating point
     PPV = TP/(TP+FP) - note depends of prevelance of positive class
@@ -508,26 +514,33 @@ def max_ppv(fpr, tpr, Nn, Np):
     Nn, Np : int
         The number of negative and positive samples in the dataset the ROC curve
         was constructed from
-
+    target_ppv : float (default=1.0)
+        The target ppv to find the closest operating point for, e.g., 
+        if ppv=1.0 then the "best" ppv closest to 1.0 is returned
+        
     Returns
     -------
-    Bppv, Bppv_fpr, Bppv_tpr: float
-        The maximum PPV and the operating point (fpr, tpr) with max PPV
+    Bppv, Bppv_fpr, Bppv_tpr, Bppv_thresh: float
+        Best PPV and operating point (fpr, tpr) closest to target PPV
     """
 
     ppv = np.zeros(len(tpr))
     Bppv = 0.0
+    ppv_diff = 1.0
     for i, tpr_val in enumerate(tpr):
         if tpr_val == 0.0:
             ppv[i] = 0.0
         else:
             ppv[i] = (tpr_val*Np)/((tpr_val*Np) + (fpr[i]*Nn))
-            if ppv[i] >= Bppv:
+            diff = abs(target_ppv - ppv[i])
+            if diff <= ppv_diff:
+                ppv_diff = diff
                 Bppv = ppv[i]
                 Bppv_tpr = tpr[i]
                 Bppv_fpr = fpr[i]
+                Bppv_thresh = thresh[i]
 
-    return (Bppv, Bppv_fpr, Bppv_tpr)
+    return (Bppv, Bppv_fpr, Bppv_tpr, Bppv_thresh)
 
 def max_youden_J(fpr, tpr, thresh):
     """
@@ -632,7 +645,7 @@ def sew_auc(AUC, nn, np):
     return std_err
 
 def plot_roc(target, score, plot_type='SeSp', title=None, save_pdf=False, min_err=False,
-             dec_T=0.0, ppv_npv=False, n_p='', np_min=0.9, max_J=False,
+             dec_T=0.0, ppv_npv=False, n_p='', np_min=0.95, max_J=False,
              pos_label=None, sample_weight=None, drop_intermediate=True):
     """
 
@@ -682,15 +695,17 @@ def plot_roc(target, score, plot_type='SeSp', title=None, save_pdf=False, min_er
          Whether to highlight the operating point at decision threshold score value  
          If the score is a calibrated probability 0.5 is a natural threshold value 
 
-     ppv_npv : boolean, optional (default=False
-         Whether to highlight the best NPV and PPV operating points
+     ppv_npv : boolean, optional (default=False)
+         Whether to highlight the NPV and PPV operating points that meet np_min below
 
      n_p : str, optional (default=Empty)
          Whether to find and plot the Neyman-Pearson threshold that meets a
          minimum constraint on 'Se' or 'Sp'
 
      np_min : float, optional (default=0.95)
-         Find the operating point that meets this minimum 'Se' or 'Sp' value
+         if n_p is NOT empty
+             Find the operating point that meets this minimum 'Se' or 'Sp' value
+         elseif n_p is empty this is the npv/ppv value for best_npv/best_ppv to find
 
      max_J : boolean, optional (default=False)
          Whether to highlight the operating point with maximum Youden's J
@@ -746,8 +761,8 @@ def plot_roc(target, score, plot_type='SeSp', title=None, save_pdf=False, min_er
         Tfpr, Ttpr, Tthresh = decision_threshold(fpr,tpr,thresh,dec_T)
     
     if ppv_npv:
-        Bppv, Bppv_fpr, Bppv_tpr = max_ppv(fpr, tpr, Nn, Np)
-        Bnpv, Bnpv_fpr, Bnpv_tpr = max_npv(fpr, tpr, Nn, Np)
+        Bppv, Bppv_fpr, Bppv_tpr, Bppvth = best_ppv(fpr, tpr, thresh, Nn, Np, np_min)
+        Bnpv, Bnpv_fpr, Bnpv_tpr, Bnpvth = best_npv(fpr, tpr, thresh, Nn, Np, np_min)
 
     # if you want to plot the maximum Youden's J point figure out where it is
     if max_J:
@@ -772,20 +787,20 @@ def plot_roc(target, score, plot_type='SeSp', title=None, save_pdf=False, min_er
         plt.plot(1-fpr, tpr,'b-', label='AUC = {:0.3f} +/-{:0.4f}'.format(roc_auc, sew))
 
         if ppv_npv:
-            plt.plot(1-Bppv_fpr, Bppv_tpr,'ro', label='PPV = {:0.3f}'.format(Bppv))
-            plt.plot(1-Bnpv_fpr, Bnpv_tpr,'go', label='NPV = {:0.3f}'.format(Bnpv))
+            plt.plot(1-Bppv_fpr, Bppv_tpr,'ro', label='PPV@{:0.2f} = {:0.2f}'.format(Bppvth,Bppv))
+            plt.plot(1-Bnpv_fpr, Bnpv_tpr,'go', label='NPV@{:0.2f} = {:0.2f}'.format(Bnpvth,Bnpv))
 
         if min_err:
-            plt.plot(1-mfpr, mtpr, 'bo', label='Error = {:0.3f}'.format(merr))
+            plt.plot(1-mfpr, mtpr, 'bo', label='Error@{:0.2f} = {:0.3f}'.format(mthresh,merr))
             
         if dec_T:
             plt.plot(1-Tfpr, Ttpr, 'co', label='Sp,Se@{:0.2f} = ({:0.2f},{:0.2f})'.format(Tthresh,1-Tfpr,Ttpr))
 
         if th_np:
-            plt.plot(1-fpr_np, tpr_np, 'ko', label='Sp,Se = ({:0.3f},{:0.3f})'.format(1-fpr_np,tpr_np))
+            plt.plot(1-fpr_np, tpr_np, 'ko', label='Sp,Se@{:0.2f} = ({:0.2f},{:0.2f})'.format(th_np,1-fpr_np,tpr_np))
 
         if max_J:
-            plt.plot(1-Jfpr, Jtpr, 'yo', label='Youden J = {:0.3f}'.format(Jval))
+            plt.plot(1-Jfpr, Jtpr, 'yo', label='J@{:0.2f} = {:0.2f}'.format(Jthresh,Jval))
 
         plt.plot([0,1],[1,0],'k--')
         plt.xlim([-0.0,1.02])
@@ -836,20 +851,20 @@ def plot_roc(target, score, plot_type='SeSp', title=None, save_pdf=False, min_er
         plt.plot(fpr, tpr, 'b', label='AUC = {:0.3f} +/-{:0.4f}'.format(roc_auc, sew))
 
         if ppv_npv:
-            plt.plot(Bppv_fpr, Bppv_tpr,'ro', label='PPV = {:0.3f}'.format(Bppv))
-            plt.plot(Bnpv_fpr, Bnpv_tpr,'go', label='NPV = {:0.3f}'.format(Bnpv))
+            plt.plot(Bppv_fpr, Bppv_tpr,'ro', label='PPV@{:0.2f} = {:0.2f}'.format(Bppvth,Bppv))
+            plt.plot(Bnpv_fpr, Bnpv_tpr,'go', label='NPV@{:0.2f} = {:0.2f}'.format(Bnpvth,Bnpv))
 
         if min_err:
-            plt.plot(mfpr, mtpr, 'bo', label='Error = {:0.3f}'.format(merr))
+            plt.plot(mfpr, mtpr, 'bo', label='Error@{:0.2f} = {:0.3f}'.format(mthresh,merr))
 
         if dec_T:
             plt.plot(Tfpr, Ttpr, 'co', label='FPR,TPR@{:0.2f} = ({:0.2f},{:0.2f})'.format(Tthresh,Tfpr,Ttpr))
 
         if th_np:
-            plt.plot(fpr_np, tpr_np, 'ko', label='FPR,TPR = ({:0.3f},{:0.3f})'.format(fpr_np,tpr_np))
+            plt.plot(fpr_np, tpr_np, 'ko', label='FPR,TPR@{:0.2f} = ({:0.2f},{:0.2f})'.format(th_np,fpr_np,tpr_np))
 
         if max_J:
-            plt.plot(Jfpr, Jtpr, 'yo', label='Youden J = {:0.3f}'.format(Jval))
+            plt.plot(Jfpr, Jtpr, 'yo', label='J@{:0.2f} = {:0.3f}'.format(Jthresh,Jval))
 
         if plot_type.lower() == 'chi':
             xx, yy = np.mgrid[0:1:.01, 0:1:.01]
